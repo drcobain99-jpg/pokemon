@@ -134,6 +134,9 @@ button.blue{background:#3d7bff}
 #toast{position:fixed;left:50%;top:12px;transform:translateX(-50%);z-index:70;display:flex;flex-direction:column;gap:6px;align-items:center;pointer-events:none;max-width:92vw}
 #toast div{background:#000c;color:#fff;padding:9px 16px;border-radius:12px;font-size:15px;word-break:break-all}
 button:disabled{opacity:.4}
+.onum{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;color:#fff;font-size:13px;font-weight:900;vertical-align:middle}
+.onum.sm{width:18px;height:18px;font-size:11px}.onum.big{width:32px;height:32px;font-size:17px;flex:none}
+.ob{width:42px;height:40px;padding:0;font-size:15px;flex:none;background:#ffffff22}
 </style>
 </head>
 <body>
@@ -397,7 +400,7 @@ function startRound() {
   s.f = s.active.map(pi => ({ p: pi, d: s.sel[pi], hp: 100, out: false }));
   if (!s.overtime) { s.round++; s.f.forEach(f => s.players[f.p].used.push(f.d)); }
   s.rk++; s.phase = 'battle'; s.winner = null;
-  s.turn = s.overtime ? 0 : (s.round - 1) % s.f.length;
+  s.turn = s.overtime ? 0 : (s.round - 1) % s.f.length; // 라운드마다 먼저 공격하는 사람이 순서대로 바뀜 (연장전은 1번부터)
   H.lock = Date.now() + 1000;
 }
 function doAttack(mi) {
@@ -452,8 +455,13 @@ const hostCmd = {
   start() { const s = H.S; if (s.phase !== 'lobby' || s.players.length < 2) return;
     s.per = Math.max(1, Math.min(maxPer(s.players.length), s.per));
     s.players.forEach(p => { p.team = []; p.used = []; p.wins = 0; });
-    s.owner = {}; s.pick = 0; s.round = 0; s.overtime = false; s.champ = null; s.winner = null; s.phase = 'draft'; s.game++;
+    s.owner = {}; s.pick = 0; s.round = 0; s.overtime = false; s.champ = null; s.winner = null; s.phase = 'order'; s.game++;
     hostBroadcast(); },
+  move(i, d) { const s = H.S; if (s.phase !== 'order') return; const j = i + d; if (j < 0 || j >= s.players.length) return;
+    [s.players[i], s.players[j]] = [s.players[j], s.players[i]]; hostBroadcast(); },
+  shuffleOrder() { const s = H.S; if (s.phase !== 'order') return; for (let i = s.players.length - 1; i > 0; i--) { const j = ri(i + 1); [s.players[i], s.players[j]] = [s.players[j], s.players[i]]; } hostBroadcast(); },
+  toLobby() { const s = H.S; if (s.phase !== 'order') return; s.phase = 'lobby'; hostBroadcast(); },
+  beginDraft() { const s = H.S; if (s.phase !== 'order') return; s.phase = 'draft'; hostBroadcast(); },
   next() { const s = H.S;
     if (s.phase === 'roundEnd') {
       if (s.round < s.per) { s.active = s.players.map((_, i) => i); startSelect(); }
@@ -601,13 +609,13 @@ function onState(s) {
   const prev = S; S = s;
   if (!s.players.some(p => p.dev === myDev()) && role === 'guest') { guestStop(); LS.del('kp-guest'); renderHome('방에서 나가게 되었어요.'); return; }
   const ph = s.phase;
-  const key = ph === 'lobby' ? 'lobby' + s.game : ph === 'draft' ? 'draft' + s.game : ph === 'select' ? 'select' + s.game + ':' + s.round + (s.overtime ? 'o' : '') : 'battle' + s.rk;
+  const key = ph === 'lobby' ? 'lobby' + s.game : ph === 'order' ? 'order' + s.game : ph === 'draft' ? 'draft' + s.game : ph === 'select' ? 'select' + s.game + ':' + s.round + (s.overtime ? 'o' : '') : 'battle' + s.rk;
   if (key !== mountKey) {
     mountKey = key;
     if (!['roundEnd', 'tie', 'final'].includes(ph)) closeModal();
-    if (ph === 'lobby') mountLobby(); else if (ph === 'draft') mountDraft(); else if (ph === 'select') mountSelect(); else mountBattle();
+    if (ph === 'lobby') mountLobby(); else if (ph === 'order') mountOrder(); else if (ph === 'draft') mountDraft(); else if (ph === 'select') mountSelect(); else mountBattle();
   }
-  if (ph === 'lobby') updLobby(); else if (ph === 'draft') updDraft(prev); else if (ph === 'select') updSelect(); else updBattle();
+  if (ph === 'lobby') updLobby(); else if (ph === 'order') updOrder(); else if (ph === 'draft') updDraft(prev); else if (ph === 'select') updSelect(); else updBattle();
 }
 
 /* ----- 홈 ----- */
@@ -680,7 +688,7 @@ function mountLobby() {
     </div>
     <div class="panel"><h2>1인당 포켓몬 수 ${host ? '' : '<small>호스트가 정해요</small>'}</h2>
       <div class="step">${host ? '<button data-c="-">−</button>' : ''}<b id="per"></b>${host ? '<button data-c="+">+</button>' : ''}</div></div>
-    ${host ? '<button class="big" id="go">포켓몬 고르러 가기 ▶</button><button class="ghost" id="close">' + (online ? '방 닫기' : '처음으로') + '</button>'
+    ${host ? '<button class="big" id="go">순서 정하러 가기 ▶</button><button class="ghost" id="close">' + (online ? '방 닫기' : '처음으로') + '</button>'
            : '<div class="waitmsg">호스트가 시작하기를 기다리는 중…</div><button class="ghost" id="leave">나가기</button>'}
   </div>`;
   if (host) {
@@ -712,7 +720,7 @@ function updLobby() {
     $('#addL').disabled = full; $('#addA').disabled = full; $('#addnm').disabled = full;
     $('[data-c="-"]').disabled = s.per <= 1; $('[data-c="+"]').disabled = s.per >= maxPer(s.players.length);
     $('#go').disabled = s.players.length < 2;
-    $('#go').textContent = s.players.length < 2 ? '한 명 이상 더 필요해요 (AI 가능)' : '포켓몬 고르러 가기 ▶';
+    $('#go').textContent = s.players.length < 2 ? '한 명 이상 더 필요해요 (AI 가능)' : '순서 정하러 가기 ▶';
   }
 }
 let qrLib = null;
@@ -729,6 +737,31 @@ async function renderQR() {
   if (!isWeb) return;
   const url = location.origin + location.pathname + '?room=' + S.code;
   try { await needQR(); const box = $('#qr'); if (!box) return; const q = qrcode(0, 'M'); q.addData(url); q.make(); box.innerHTML = q.createSvgTag({ cellSize: 4, margin: 2, scalable: true }); } catch (e) {}
+}
+
+
+/* ----- 플레이 순서 정하기 ----- */
+function mountOrder() {
+  const host = role === 'host';
+  app().innerHTML = `<div class="screen on"><div class="topbar"><b>플레이 순서 정하기</b>${netHTML()}</div>
+    <div class="sub">이 순서대로 포켓몬을 고르고, 공격도 이 순서로 해요</div>
+    <div class="panel"><div id="olist"></div>
+      ${host ? '<button id="oshuf" style="width:100%;margin-top:8px">🎲 무작위로 섞기</button>' : ''}</div>
+    ${host ? '<button class="big" id="obegin">이 순서로 포켓몬 고르기 ▶</button><button class="ghost" id="oback">대기실로 돌아가기</button>'
+           : '<div class="waitmsg">호스트가 순서를 정하는 중…</div>'}</div>`;
+  if (host) {
+    $('#olist').onclick = e => { const b = e.target.closest('[data-mv]'); if (b) { sfx('pick'); hostCmd.move(+b.dataset.i, +b.dataset.mv); } };
+    $('#oshuf').onclick = () => { sfx('coin'); hostCmd.shuffleOrder(); };
+    $('#obegin').onclick = () => hostCmd.beginDraft();
+    $('#oback').onclick = () => hostCmd.toLobby();
+  }
+}
+function updOrder() {
+  const s = S, host = role === 'host', n = s.players.length;
+  setHTML($('#olist'), s.players.map((p, i) => `<div class="prow orow" style="border-left:6px solid ${pColor(i)}">
+    <span class="onum big" style="background:${pColor(i)}">${i + 1}</span><span class="pn">${esc(p.name)}</span>
+    ${mine(p) && s.online ? '<span class="tagx me">나</span>' : ''}${p.ai ? '<span class="tagx">🤖</span>' : ''}
+    ${host ? `<button class="ob" data-mv="-1" data-i="${i}" ${i === 0 ? 'disabled' : ''}>▲</button><button class="ob" data-mv="1" data-i="${i}" ${i === n - 1 ? 'disabled' : ''}>▼</button>` : ''}</div>`).join(''));
 }
 
 /* ----- 포켓몬 고르기 ----- */
@@ -754,7 +787,7 @@ function updDraft(prev) {
     return `<div class="card ${o != null ? 'taken' : my ? 'can' : ''}" data-i="${i}" style="${o != null ? `border-color:${pColor(o)}` : ''}">
       <img src="${IMG[d.k]}"><span class="ty" style="background:${tyColor(d.t)}">${d.t}</span><span class="nm">${d.n}</span>
       ${o != null ? `<span class="own" style="background:${pColor(o)}66">${esc(s.players[o].name)}</span>` : ''}</div>`; }).join(''));
-  setHTML($('#dteams'), s.players.map((q, i) => `<div style="margin:4px 0"><b style="color:${pColor(i)}">${esc(q.name)}</b>${mine(q) ? ' (나)' : ''}
+  setHTML($('#dteams'), s.players.map((q, i) => `<div style="margin:4px 0"><span class="onum" style="background:${pColor(i)}">${i + 1}</span> <b style="color:${pColor(i)}">${esc(q.name)}</b>${mine(q) ? ' (나)' : ''}
     <div class="chips">${q.team.map(k => `<span class="chip">${DEX[k].n}</span>`).join('') || '<span class="chip">-</span>'}</div></div>`).join(''));
 }
 
@@ -793,7 +826,7 @@ function mountBattle() {
     return `<div class="fighter" id="f${i}">
       <div class="hpBox"><div class="bar"><i></i></div><div class="hpNum"></div></div>
       <div class="pic" style="--pc:${pColor(f.p)}"><img src="${IMG[d.k]}"><div class="face">😣</div><div class="dz"><span>@</span><span>@</span></div></div>
-      <div class="tag">${d.n}</div><div class="ptag" style="color:${pColor(f.p)}">${esc(p.name)}${p.ai ? ' 🤖' : ''}${mine(p) && s.online ? ' (나)' : ''}</div></div>`; }).join('');
+      <div class="tag">${d.n}</div><div class="ptag" style="color:${pColor(f.p)}"><span class="onum sm" style="background:${pColor(f.p)}">${f.p + 1}</span> ${esc(p.name)}${p.ai ? ' 🤖' : ''}${mine(p) && s.online ? ' (나)' : ''}</div></div>`; }).join('');
   $('#moves').onclick = e => { const b = e.target.closest('button[data-i]'); if (!b || animating() || Date.now() < CL.pend) return; CL.pend = Date.now() + 1800; unlockAudio(); renderTurn(); later(1800); send({ t: 'attack', mi: +b.dataset.i }); };
   if (s.phase === 'battle' && s.ev.rk !== s.rk) {
     CL.animUntil = Date.now() + 1300;
